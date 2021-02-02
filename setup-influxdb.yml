@@ -1,0 +1,50 @@
+- name: setup VMs
+  hosts: localhost
+  gather_facts: no
+  vars:
+    vm_prom: test-influxdb-1
+  tasks:
+    - name: create VM
+      command: multipass launch --name {{ vm_prom }} --mem 1G --disk 5G bionic
+      register: out
+      failed_when: 'out.rc != 0 and "already exists" not in out.stderr'
+      changed_when: out.rc == 0
+    
+    - name: get IP
+      command: multipass info --format json {{ vm_prom }}
+      register: vm_info
+
+    - set_fact:
+        vm_ip: "{{ (vm_info.stdout | from_json).info[vm_prom].ipv4 | first }}"
+
+    - ping:
+      delegate_to: "{{ vm_ip }}"
+      register: key_check
+      ignore_unreachable: yes
+  
+    - name: install ssh key
+      block:
+        - tempfile:
+          register: tempfile_1
+        - command: multipass transfer {{ vm_prom }}:.ssh/authorized_keys {{ tempfile_1.path }}
+        - lineinfile:
+            path: "{{ tempfile_1.path }}"
+            line: "{{lookup('file', '~/.ssh/id_rsa.pub') }}"
+        - command: multipass transfer {{ tempfile_1.path }} {{ vm_prom }}:.ssh/authorized_keys
+        - file:
+            path: "{{ tempfile_1.path }}"
+            state: absent
+      when: key_check.unreachable|default(False)
+
+    - add_host:
+        hostname: '{{ vm_ip }}'
+        groups: targ
+
+- name: setup VM
+  hosts: targ
+  gather_facts: no
+  become: yes
+  tasks:
+    - apt:
+        name: influxdb
+        cache_valid_time: 3600
